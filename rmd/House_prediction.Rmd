@@ -1,0 +1,214 @@
+---
+title: "Housing prediction"
+author: "Victory Benjamin"
+date: "2024-09-26"
+output: prettydoc::html_pretty
+---
+
+```{r setup, include= FALSE}
+knitr::opts_chunk$set(include = TRUE)
+library("ggrepel")
+library(corrplot)             
+library(tidyverse)
+library(scales)
+library(wesanderson)
+library(psych)
+library(RColorBrewer)
+library(knitr)
+library(here)
+pacman::p_load(flextable, gt, reactable)
+```
+
+## loading necessary libraries
+
+-   Below i am loading the needed libraries
+
+library("ggrepel")
+
+library(corrplot)
+
+library(tidyverse)
+
+library(scales)
+
+library(wesanderson)
+
+library(psych)
+
+library(RColorBrewer)
+
+library(knitr)
+
+library(here)
+
+## loading the train document...
+```{r include=FALSE}
+train <- read_csv(here("data/train.csv"))
+test <- read_csv(here("data/test..csv"))
+
+
+```
+
+```{r echo=TRUE}
+reactable::reactable(train)
+
+
+```
+
+## view the structure of the data
+```{r}
+str(head(train, 10))
+```
+
+
+### Save the 'Id' column from the test set to a separate vector and Remove the 'Id' column from both the test and train datasets
+
+```{r}
+test_label <- train$Id
+train$Id <- NULL
+test$Id <- NULL
+all <- bind_rows(train, test)
+dim(all)
+
+
+```
+
+### Exploring some of the most important variables
+
+####   1. The response variable; SalePrice 
+##### As you can see, the sale prices are right skewed. This was expected as few people can afford very expensive houses. I will keep this in mind, and take measures before modeling.
+```{r}
+ggplot(data= all[!is.na(all$SalePrice), ], aes(x = SalePrice))+
+  geom_histogram(fill= "blue", binwidth = 10000)+
+  scale_x_continuous(breaks = seq(0,800000, by= 100000), labels = comma)+
+  labs(title = "Distribution of Sale Prices",
+       x = "Sale Price",
+       y = "Count")
+
+```
+
+#### The most important numeric predictors
+##### The character variables need some work before I can use them. To get a feel for the dataset, I decided to first see which numeric variables have a high correlation with the SalePrice.
+
+```{r}
+numericVars <- all%>%
+  select(where(is.numeric))
+
+
+cat("there are", length(numericVars), "numeric variables")
+
+cor_numVar <- numericVars %>%
+  cor(use = "pairwise.complete.obs", method = "pearson") #correlations of all numeric variables
+
+
+
+#sort on decreasing correlations with SalePrice
+cor_sorted <- cor_numVar[ "SalePrice", ] %>%
+  .[abs(.) > 0.5]  %>%
+  sort( decreasing=TRUE)
+  
+
+# call names() on the sorted corr. matrix to get a vector of names that i can use to subset the corr. matrix
+CorHigh <- names(cor_sorted)
+CorHigh
+
+#subset the correlation matrix
+cor_numVar <- cor_numVar[CorHigh, CorHigh]
+cor_numVar
+
+```
+
+
+#### The correlation graph
+```{r}
+corrplot.mixed(cor_numVar, tl.col="black", tl.pos = "lt")
+
+```
+
+#### Overall Quality
+##### Overall Quality has the highest correlation with SalePrice among the numeric variables (0.79). It rates the overall material and finish of the house on a scale from 1 (very poor) to 10 (very excellent).
+
+```{r}
+
+ggplot(data = all[!is.na(all$SalePrice), ],
+       aes(x= factor(OverallQual), y= SalePrice))+
+  geom_boxplot(colour= "blue")+
+  scale_y_continuous(breaks= seq(0, 800000, 100000), labels = comma)
+
+
+```
+
+
+#### Above Grade (Ground) Living Area (square feet)
+##### The numeric variable with the second highest correlation with SalesPrice is the Above Grade Living Area. This make a lot of sense; big houses are generally more expensive.
+
+
+```{r}
+ggplot(data = all[!is.na(all$SalePrice), ], 
+         aes(x = GrLivArea, y = SalePrice, colour = factor(OverallQual))) +
+    
+    geom_point() +
+    
+    geom_smooth(method = "lm", se = FALSE, colour = "black", aes(group = 1)) +
+    
+    scale_y_continuous(breaks = seq(0, 800000, 100000), labels = comma) +
+    
+    labs(title = "Relationship between GrLivArea and Price of a Building") +
+    
+    geom_text_repel(aes(label = ifelse(GrLivArea > 4500, rownames(all), ""))) +
+    
+    scale_colour_viridis_d()
+
+```
+
+#####  the two houses with really big living areas and low SalePrices seem outliers (houses 524 and 1299, see labels in graph). I will not take them out yet, as taking outliers can be dangerous. For instance, a low score on the Overall Quality could explain a low price. However, as you can see below, these two houses actually also score maximum points on Overall Quality. Therefore, I will keep houses 1299 and 524 in mind as prime candidates to take out as outliers.
+
+
+
+#### HANDLING MISSING VALUES,GROUPING RELATED VARIABLES, CONVERTING CLEAR ORDINAL VALUES TO ORDINAL NUMERIC VALUES, AND CONVERTING NON-ORDINAL VALUES TO FACTORS
+##### pool variables
+```{r}
+all%>%
+  mutate(PoolQC = ifelse(is.na(PoolQC), "none",PoolQC))
+
+qualities <- c("none"= 0, "Po" = 1,  "Fa"= 2, "TA"= 3, "Gd" = 4, "Ex" = 5)
+
+all <- all %>%
+  mutate(PoolQC = recode(PoolQC, !!!qualities))
+
+all <- all %>%
+  mutate(PoolQC = as.numeric(PoolQC))
+
+pool_variable <-  all %>%
+  filter(if_all(c(contains("Pool"),OverallQual), ~ !is.na(.)))%>%
+  filter(PoolArea > 0) %>%
+  select(contains("Pool"),OverallQual)
+
+pool_variable
+
+table(all$PoolArea)
+table(all$PoolQC)
+
+ggplot(data = pool_variable, aes(y= PoolQC, x= PoolArea))+
+   geom_point()
+
+
+cor_pool <- pool_variable %>%
+cor(use = "pairwise.complete.obs", method = "spearman")
+cor_pool
+
+
+mcar_poolqc <- pool_variable %>%
+  filter(PoolArea >0, PoolQC == 0)
+mcar_poolqc
+```
+
+
+
+##### filling MCAR poolQC with the overall quality for that variable
+```{r}
+pool_variable <- pool_variable %>%
+  mutate(PoolQC = ifelse(PoolArea >0 & PoolQC == 0,round(OverallQual/2),PoolQC ))
+pool_variable
+```
+
